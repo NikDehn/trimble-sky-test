@@ -1,0 +1,9 @@
+{
+  "title": "Himmel-test",
+  "description": "Test af himmel/skybox i 3D Vieweren via Workspace API (addPanorama og add3DTiles)",
+  "url": "https://nikdehn.github.io/trimble-sky-test/index.html",
+  "icon": "https://nikdehn.github.io/trimble-sky-test/icon.png",
+  "extensionType": ["3dviewer"],
+  "type": "panel",
+  "enabled": true
+}

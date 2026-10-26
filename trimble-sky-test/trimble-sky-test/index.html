@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="da">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Himmel-test</title>
+<script src="https://cdn.jsdelivr.net/npm/trimble-connect-workspace-api@0.3.38/dist/iife/trimbleconnect.workspace.api.js"></script>
+<style>
+  :root { --bg:#fff; --fg:#1d2733; --mute:#5b6b7b; --line:#d9e1e8; --acc:#0063a3; --ok:#1e7a3c; --err:#b3261e; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:12px; font:13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color:var(--fg); background:var(--bg); }
+  h1 { font-size:15px; margin:0 0 2px; }
+  p.sub { margin:0 0 10px; color:var(--mute); }
+  fieldset { border:1px solid var(--line); border-radius:6px; padding:8px 10px 10px; margin:0 0 10px; }
+  legend { font-weight:600; padding:0 4px; }
+  label { display:block; margin:6px 0 2px; color:var(--mute); }
+  input, select, textarea { width:100%; font:inherit; padding:5px 6px; border:1px solid var(--line); border-radius:4px; }
+  textarea { font:11px/1.35 ui-monospace, Consolas, monospace; min-height:150px; }
+  .row { display:grid; grid-template-columns:repeat(3, 1fr); gap:6px; }
+  .chk { display:flex; gap:6px; align-items:center; margin-top:8px; color:var(--fg); }
+  .chk input { width:auto; }
+  button { font:inherit; padding:6px 10px; border-radius:4px; border:1px solid var(--acc); background:var(--acc); color:#fff; cursor:pointer; margin:6px 6px 0 0; }
+  button.ghost { background:#fff; color:var(--acc); }
+  button:disabled { opacity:.5; cursor:default; }
+  #log { font:11px/1.4 ui-monospace, Consolas, monospace; background:#f5f7f9; border:1px solid var(--line); border-radius:4px; padding:6px; max-height:220px; overflow:auto; white-space:pre-wrap; }
+  .ok { color:var(--ok); } .err { color:var(--err); }
+  details summary { cursor:pointer; color:var(--acc); margin-top:6px; }
+</style>
+</head>
+<body>
+<h1>Himmel-test</h1>
+<p class="sub">Lægger et himmel-panorama omkring modellen via Workspace API. Status: <span id="conn">forbinder…</span></p>
+
+<fieldset>
+  <legend>1. Placering</legend>
+  <button id="btnCenter" class="ghost" disabled>Find modellens centrum</button>
+  <div class="row">
+    <div><label for="cx">X (m)</label><input id="cx" type="number" step="any" value="0"></div>
+    <div><label for="cy">Y (m)</label><input id="cy" type="number" step="any" value="0"></div>
+    <div><label for="cz">Z (m)</label><input id="cz" type="number" step="any" value="0"></div>
+  </div>
+  <label for="radius">Kuglens radius (m)</label>
+  <input id="radius" type="number" step="any" value="1000">
+</fieldset>
+
+<fieldset>
+  <legend>2. Plan A: addPanorama</legend>
+  <label for="variant">URL-mønster til tiles</label>
+  <select id="variant">
+    <option value="sky/pano.jpg">A · ét billede, ingen pladsholdere</option>
+    <option value="sky/{z}/{x}/{y}.jpg">B · {z}/{x}/{y}</option>
+    <option value="sky/{level}/{x}_{y}.jpg">C · {level}/{x}_{y}</option>
+    <option value="sky/{lod}/{x}/{y}.jpg">D · {lod}/{x}/{y}</option>
+    <option value="sky/{z}/{x}_{y}.jpg">E · {z}/{x}_{y}</option>
+    <option value="sky/{level}/{col}_{row}.jpg">F · {level}/{col}_{row}</option>
+  </select>
+  <label class="chk"><input id="lowerLeft" type="checkbox"> isLowerLeftOrigin (prøv hvis billedet vender på hovedet)</label>
+  <button id="btnPano" disabled>Tilføj himmel</button>
+  <button id="btnPanoCam" class="ghost" disabled>Panorama-kamera</button>
+  <button id="btnRotCam" class="ghost" disabled>Normal kamera</button>
+  <details>
+    <summary>Rå parametre (kan rettes før afsendelse)</summary>
+    <textarea id="json" spellcheck="false"></textarea>
+    <button id="btnSendJson" class="ghost" disabled>Send JSON som den står</button>
+  </details>
+</fieldset>
+
+<fieldset>
+  <legend>3. Plan B: kuppel som 3D Tiles</legend>
+  <p class="sub" style="margin:0">Bruger add3DTiles, som er skjult i API'et og kan ændre sig uden varsel. Kuplen har fast radius 2000 m.</p>
+  <select id="tilesVariant">
+    <option value="dome/tileset.json">tileset.json (glb, 3D Tiles 1.1)</option>
+    <option value="dome/tileset-b3dm.json">tileset-b3dm.json (b3dm, 3D Tiles 1.0)</option>
+  </select>
+  <button id="btnDome" disabled>Tilføj kuppel</button>
+</fieldset>
+
+<button id="btnRemove" class="ghost" disabled>Fjern alt fra testen</button>
+<button id="btnInspect" class="ghost" disabled>Vis kamera og tilføjede lag</button>
+
+<h1 style="margin-top:12px">Log</h1>
+<div id="log"></div>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const base = new URL('./', location.href).href;
+  const added = [];
+  let API = null;
+
+  function log(msg, cls) {
+    const line = document.createElement('div');
+    if (cls) line.className = cls;
+    line.textContent = new Date().toLocaleTimeString('da-DK') + '  ' + msg;
+    $('log').prepend(line);
+  }
+  const short = (v) => { try { const s = JSON.stringify(v); return s.length > 400 ? s.slice(0, 400) + '…' : s; } catch (e) { return String(v); } };
+
+  function num(id) { return parseFloat($(id).value) || 0; }
+
+  function panoramaParams() {
+    const id = 'sky-test-' + Date.now();
+    return {
+      id: id,
+      tilesUrl: base + $('variant').value,
+      tileWidth: 4096,
+      tileHeight: 2048,
+      maxWidth: 4096,
+      maxHeight: 2048,
+      isLowerLeftOrigin: $('lowerLeft').checked,
+      fovLeft: 0,
+      fovRight: 360,
+      fovTop: 90,
+      fovBottom: -90,
+      minLodLevel: 0,
+      sphereRadius: num('radius'),
+      position: { x: num('cx'), y: num('cy'), z: num('cz') },
+      headingInDegrees: 0
+    };
+  }
+
+  function refreshJson() { $('json').value = JSON.stringify(panoramaParams(), null, 2); }
+  ['variant', 'lowerLeft', 'radius', 'cx', 'cy', 'cz'].forEach((id) => $(id).addEventListener('input', refreshJson));
+  ['variant', 'lowerLeft'].forEach((id) => $(id).addEventListener('change', refreshJson));
+  refreshJson();
+
+  async function addPanorama(params) {
+    log('addPanorama → ' + params.tilesUrl);
+    try {
+      const ok = await API.viewer.addPanorama(params);
+      added.push(params.id);
+      log('addPanorama svarede: ' + short(ok), ok ? 'ok' : 'err');
+    } catch (e) { log('addPanorama fejlede: ' + (e && e.message || short(e)), 'err'); }
+  }
+
+  async function findCenter() {
+    log('Henter objekter og bounding boxes…');
+    try {
+      const models = await API.viewer.getObjects();
+      const min = { x: Infinity, y: Infinity, z: Infinity }, max = { x: -Infinity, y: -Infinity, z: -Infinity };
+      let count = 0;
+      for (const m of models || []) {
+        const ids = (m.objects || []).map((o) => o.id);
+        for (let i = 0; i < ids.length; i += 2000) {
+          const boxes = await API.viewer.getObjectBoundingBoxes(m.modelId, ids.slice(i, i + 2000));
+          for (const b of boxes || []) {
+            const bb = b.boundingBox; if (!bb) continue;
+            ['x', 'y', 'z'].forEach((k) => { min[k] = Math.min(min[k], bb.min[k]); max[k] = Math.max(max[k], bb.max[k]); });
+            count++;
+          }
+        }
+      }
+      if (!count) throw new Error('ingen bounding boxes – er der en model indlæst?');
+      const c = { x: (min.x + max.x) / 2, y: (min.y + max.y) / 2, z: min.z };
+      const diag = Math.hypot(max.x - min.x, max.y - min.y, max.z - min.z);
+      $('cx').value = c.x.toFixed(2); $('cy').value = c.y.toFixed(2); $('cz').value = c.z.toFixed(2);
+      $('radius').value = Math.max(500, Math.round(diag * 3));
+      refreshJson();
+      log('Centrum (bund af modellen): ' + short(c) + ', diagonal ' + diag.toFixed(1) + ' m, ' + count + ' objekter', 'ok');
+    } catch (e) {
+      log('Kunne ikke beregne centrum: ' + (e && e.message || short(e)) + '. Bruger kameraets position.', 'err');
+      try {
+        const cam = await API.viewer.getCamera();
+        if (cam && cam.position) { $('cx').value = cam.position.x.toFixed(2); $('cy').value = cam.position.y.toFixed(2); $('cz').value = cam.position.z.toFixed(2); refreshJson(); }
+      } catch (e2) { log('getCamera fejlede: ' + short(e2), 'err'); }
+    }
+  }
+
+  async function addDome() {
+    const id = 'sky-dome-' + Date.now();
+    const payload = {
+      id: id,
+      url: base + $('tilesVariant').value,
+      placement: { position: { x: num('cx') * 1000, y: num('cy') * 1000, z: num('cz') * 1000 } },
+      fitToView: false,
+      visible: true
+    };
+    if (typeof API.viewer.add3DTiles !== 'function') { log('add3DTiles findes ikke i denne API-version', 'err'); return; }
+    log('add3DTiles → ' + payload.url);
+    try {
+      const ok = await API.viewer.add3DTiles(payload);
+      added.push(id);
+      log('add3DTiles svarede: ' + short(ok), ok ? 'ok' : 'err');
+    } catch (e) { log('add3DTiles fejlede: ' + (e && e.message || short(e)), 'err'); }
+  }
+
+  async function removeAll() {
+    for (const id of added.splice(0)) {
+      try { const r = await API.viewer.removeModel(id, false); log('removeModel ' + id + ': ' + short(r)); }
+      catch (e) { log('removeModel ' + id + ' fejlede: ' + short(e), 'err'); }
+    }
+  }
+
+  async function inspect() {
+    try { log('Kamera: ' + short(await API.viewer.getCamera())); } catch (e) { log('getCamera: ' + short(e), 'err'); }
+    try { log('Kameratilstand: ' + short(await API.viewer.getCameraMode())); } catch (e) { log('getCameraMode: ' + short(e), 'err'); }
+    try { log('Punktskyer/panoramaer: ' + short(await API.viewer.getPointClouds())); } catch (e) { log('getPointClouds: ' + short(e), 'err'); }
+    try { if (API.viewer.get3DTiles) log('3D Tiles: ' + short(await API.viewer.get3DTiles())); } catch (e) { log('get3DTiles: ' + short(e), 'err'); }
+  }
+
+  async function setMode(mode) {
+    try {
+      const pos = { x: num('cx'), y: num('cy'), z: num('cz') + 1.7 };
+      const r = await API.viewer.setCameraMode(mode, mode === 'panorama' ? pos : undefined);
+      log('setCameraMode(' + mode + '): ' + short(r));
+    } catch (e) { log('setCameraMode fejlede: ' + short(e), 'err'); }
+  }
+
+  $('btnCenter').onclick = findCenter;
+  $('btnPano').onclick = () => addPanorama(panoramaParams());
+  $('btnSendJson').onclick = () => { try { addPanorama(JSON.parse($('json').value)); } catch (e) { log('JSON kan ikke læses: ' + e.message, 'err'); } };
+  $('btnDome').onclick = addDome;
+  $('btnRemove').onclick = removeAll;
+  $('btnInspect').onclick = inspect;
+  $('btnPanoCam').onclick = () => setMode('panorama');
+  $('btnRotCam').onclick = () => setMode('rotate');
+
+  if (typeof TrimbleConnectWorkspace === 'undefined') {
+    $('conn').textContent = 'API-scriptet kunne ikke hentes';
+    log('trimbleconnect.workspace.api.js blev ikke indlæst (netværk/CDN blokeret?)', 'err');
+    return;
+  }
+  if (window.parent === window) {
+    $('conn').textContent = 'ikke åbnet inde i Trimble Connect';
+    log('Siden skal køre som extension inde i 3D Vieweren. Tiles-URL: ' + base + 'sky/pano.jpg');
+    return;
+  }
+  TrimbleConnectWorkspace.connect(window.parent, (event, data) => {
+    if (event === 'viewer.onCameraChanged') return;
+    log('event ' + event + ' ' + short(data && data.data !== undefined ? data.data : data));
+  }, 30000).then((api) => {
+    API = api;
+    $('conn').textContent = 'forbundet';
+    document.querySelectorAll('button').forEach((b) => (b.disabled = false));
+    log('Forbundet til 3D Vieweren. Filer hentes fra ' + base, 'ok');
+  }).catch((e) => {
+    $('conn').textContent = 'forbindelse fejlede';
+    log('connect fejlede: ' + short(e), 'err');
+  });
+})();
+</script>
+</body>
+</html>

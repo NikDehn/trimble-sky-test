@@ -1,0 +1,21 @@
+{
+  "asset": {
+    "version": "1.0"
+  },
+  "geometricError": 100000,
+  "root": {
+    "boundingVolume": {
+      "sphere": [
+        0,
+        0,
+        0,
+        2000.0
+      ]
+    },
+    "geometricError": 0,
+    "refine": "ADD",
+    "content": {
+      "uri": "dome.b3dm"
+    }
+  }
+}
